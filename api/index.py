@@ -194,8 +194,6 @@ async def analyze_course(
             raise HTTPException(status_code=400, detail="API Key do Gemini não configurada no servidor.")
             
         active_model = model_name or os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-lite")
-        genai.configure(api_key=active_key)
-        model = genai.GenerativeModel(active_model)
         
         prompt = (
             "Você é o GusPlan, um assistente de Inteligência Artificial especializado na Metodologia SENAI de Educação Profissional (MESEP).\n"
@@ -245,13 +243,16 @@ async def analyze_course(
             "}"
         )
         
-        response = model.generate_content(
-            prompt,
-            generation_config={"response_mime_type": "application/json"}
-        )
+        contents = [{"role": "user", "parts": [{"text": prompt}]}]
+        response_text = call_gemini_api(active_key, active_model, contents, response_mime_type="application/json")
         
         # Parse JSON to confirm it is valid
-        parsed_data = json.loads(response.text)
+        # Strip markdown code fences if model returned them despite instruction
+        clean = response_text.strip()
+        if clean.startswith("```"):
+            clean = clean.split("\n", 1)[-1]
+            clean = clean.rsplit("```", 1)[0]
+        parsed_data = json.loads(clean)
         return parsed_data
         
     except Exception as e:
