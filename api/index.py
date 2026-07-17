@@ -6,7 +6,8 @@ import docx
 import io
 import json
 import os
-import google.generativeai as genai
+import urllib.request
+import urllib.error
 
 app = FastAPI()
 
@@ -57,6 +58,42 @@ async def extract_text(file: UploadFile = File(...)):
     else:
         raise HTTPException(status_code=400, detail="Formato de arquivo não suportado. Envie PDF ou DOCX.")
 
+def call_gemini_api(api_key: str, model: str, contents: list, system_instruction: str = None, response_mime_type: str = None):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    
+    payload = {
+        "contents": contents
+    }
+    
+    if system_instruction:
+        payload["systemInstruction"] = {
+            "parts": [{"text": system_instruction}]
+        }
+        
+    generation_config = {}
+    if response_mime_type:
+        generation_config["responseMimeType"] = response_mime_type
+        
+    if generation_config:
+        payload["generationConfig"] = generation_config
+        
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+    
+    try:
+        with urllib.request.urlopen(req) as response:
+            res_data = json.loads(response.read().decode("utf-8"))
+            return res_data['candidates'][0]['content']['parts'][0]['text']
+    except urllib.error.HTTPError as e:
+        err_msg = e.read().decode("utf-8")
+        raise Exception(f"Erro HTTP {e.code} da API Gemini: {err_msg}")
+    except Exception as e:
+        raise Exception(f"Falha ao chamar API Gemini: {str(e)}")
+
 def get_api_key(passed_key: str = None):
     key = passed_key or os.environ.get("GEMINI_API_KEY", "")
     if not key:
@@ -89,9 +126,6 @@ async def chat_with_docs(
             raise HTTPException(status_code=400, detail="API Key do Gemini não configurada no servidor.")
             
         active_model = model_name or os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-lite")
-        genai.configure(api_key=active_key)
-        model = genai.GenerativeModel(active_model)
-        
         history_list = json.loads(history)
         
         # Build system prompt/context
@@ -105,17 +139,17 @@ async def chat_with_docs(
             "e instrumentos de registro. Escreva em Português do Brasil."
         )
         
-        # Format chat history for Gemini
+        # Format chat history for Gemini (standard REST structure)
         contents = []
         for msg in history_list:
             role = "user" if msg.get("role") == "user" else "model"
-            contents.append({"role": role, "parts": [msg.get("text", "")]})
+            contents.append({"role": role, "parts": [{"text": msg.get("text", "")}]})
             
         # Append current message
-        contents.append({"role": "user", "parts": [f"Contexto do Sistema:\n{system_instruction}\n\nPergunta do usuário:\n{message}"]})
+        contents.append({"role": "user", "parts": [{"text": f"Contexto do Sistema:\n{system_instruction}\n\nPergunta do usuário:\n{message}"}]})
         
-        response = model.generate_content(contents)
-        return {"response": response.text}
+        response_text = call_gemini_api(active_key, active_model, contents)
+        return {"response": response_text}
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro no chat com Gemini: {str(e)}")
