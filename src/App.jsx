@@ -80,7 +80,14 @@ export default function App() {
     }
   };
 
+
   const extractTextFromFile = async (file) => {
+    // Warn user if file is very large (>10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      setStatusMsg(`⚠️ Arquivo grande (${(file.size / 1024 / 1024).toFixed(1)}MB). Carregando primeiras páginas...`);
+      setTimeout(() => setStatusMsg(''), 4000);
+    }
+    
     const formData = new FormData();
     formData.append('file', file);
     try {
@@ -93,12 +100,19 @@ export default function App() {
         throw new Error(err.detail || 'Erro ao extrair arquivo');
       }
       const data = await response.json();
+      // If PDF was truncated, show a non-blocking notice
+      if (data.pages_total && data.pages_loaded && data.pages_total > data.pages_loaded) {
+        setStatusMsg(`📄 Livro carregado (${data.pages_loaded}/${data.pages_total} páginas — suficiente para análise)`);
+        setTimeout(() => setStatusMsg(''), 5000);
+      }
       return data.text;
     } catch (e) {
-      alert(`Falha ao ler o arquivo: ${e.message}`);
+      setStatusMsg(`❌ Falha ao ler arquivo: ${e.message}`);
+      setTimeout(() => setStatusMsg(''), 6000);
       return '';
     }
   };
+
 
   // NotebookLM Chat
   const sendChatMessage = async (e) => {

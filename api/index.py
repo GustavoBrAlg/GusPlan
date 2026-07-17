@@ -30,16 +30,27 @@ async def extract_text(file: UploadFile = File(...)):
     filename = file.filename.lower()
     content = await file.read()
     
+    # Guard: reject files over 15MB to avoid timeout
+    if len(content) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Arquivo muito grande (máximo 15MB). Para o livro MESEP, use a versão comprimida.")
+    
     if filename.endswith(".pdf"):
         try:
             pdf_file = io.BytesIO(content)
             reader = pypdf.PdfReader(pdf_file)
             text = ""
-            for page in reader.pages:
+            total_pages = len(reader.pages)
+            # Limit to first 180 pages to avoid serverless timeout on large books
+            max_pages = min(total_pages, 180)
+            for i, page in enumerate(reader.pages):
+                if i >= max_pages:
+                    break
                 page_text = page.extract_text()
                 if page_text:
                     text += page_text + "\n"
-            return {"text": text.strip()}
+            if total_pages > max_pages:
+                text += f"\n[Nota: Documento com {total_pages} páginas. Apenas as primeiras {max_pages} foram carregadas.]"
+            return {"text": text.strip(), "pages_total": total_pages, "pages_loaded": max_pages}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Erro ao extrair PDF: {str(e)}")
             
@@ -58,41 +69,57 @@ async def extract_text(file: UploadFile = File(...)):
     else:
         raise HTTPException(status_code=400, detail="Formato de arquivo não suportado. Envie PDF ou DOCX.")
 
+# Model fallback order — tries each until one works
+GEMINI_MODELS_FALLBACK = [
+    "gemini-2.5-flash-lite-preview-06-17",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+]
+
 def call_gemini_api(api_key: str, model: str, contents: list, system_instruction: str = None, response_mime_type: str = None):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    """Call Gemini REST API with automatic fallback to other models on quota errors."""
+    # Build the candidate model list: preferred model first, then fallbacks
+    candidate_models = [model] + [m for m in GEMINI_MODELS_FALLBACK if m != model]
     
-    payload = {
-        "contents": contents
-    }
+    last_error = None
+    for try_model in candidate_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{try_model}:generateContent?key={api_key}"
+        
+        payload = {"contents": contents}
+        
+        if system_instruction:
+            payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+            
+        generation_config = {}
+        if response_mime_type:
+            generation_config["responseMimeType"] = response_mime_type
+        if generation_config:
+            payload["generationConfig"] = generation_config
+            
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        
+        try:
+            with urllib.request.urlopen(req) as response:
+                res_data = json.loads(response.read().decode("utf-8"))
+                return res_data['candidates'][0]['content']['parts'][0]['text']
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8")
+            # If quota error (429) or model not found (404), try next model
+            if e.code in (429, 404):
+                last_error = f"Modelo {try_model} indisponível (HTTP {e.code}). Tentando próximo..."
+                continue
+            raise Exception(f"Erro HTTP {e.code} da API Gemini ({try_model}): {err_body}")
+        except Exception as e:
+            last_error = str(e)
+            continue
     
-    if system_instruction:
-        payload["systemInstruction"] = {
-            "parts": [{"text": system_instruction}]
-        }
-        
-    generation_config = {}
-    if response_mime_type:
-        generation_config["responseMimeType"] = response_mime_type
-        
-    if generation_config:
-        payload["generationConfig"] = generation_config
-        
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST"
-    )
-    
-    try:
-        with urllib.request.urlopen(req) as response:
-            res_data = json.loads(response.read().decode("utf-8"))
-            return res_data['candidates'][0]['content']['parts'][0]['text']
-    except urllib.error.HTTPError as e:
-        err_msg = e.read().decode("utf-8")
-        raise Exception(f"Erro HTTP {e.code} da API Gemini: {err_msg}")
-    except Exception as e:
-        raise Exception(f"Falha ao chamar API Gemini: {str(e)}")
+    raise Exception(f"Todos os modelos Gemini falharam. Último erro: {last_error}")
 
 def get_api_key(passed_key: str = None):
     key = passed_key or os.environ.get("GEMINI_API_KEY", "")
