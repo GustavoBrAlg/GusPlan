@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+/dist
+/build
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.venv/
+.poetry/
+
+# Temp files created during analysis
+*text.txt
+*structure.txt
+*extracted.txt
+
+# Local env files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.vercel/
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
