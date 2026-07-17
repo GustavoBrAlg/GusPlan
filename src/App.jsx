@@ -136,6 +136,16 @@ export default function App() {
     }
   };
 
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      if (e.shiftKey || e.ctrlKey) {
+        return;
+      }
+      e.preventDefault();
+      sendChatMessage();
+    }
+  };
+
   // Suggestion chips
   const handleSuggestionClick = (msg) => {
     setChatMessage(msg);
@@ -629,16 +639,25 @@ export default function App() {
         </div>
 
         <form onSubmit={sendChatMessage} className="chat-input-area">
-          <input 
-            type="text" 
+          <textarea 
             className="glass-input" 
-            placeholder="Pergunte aos documentos..." 
+            placeholder="Pergunte aos documentos... (Shift+Enter ou Ctrl+Enter para pular linha, Enter para enviar)" 
             value={chatMessage} 
             onChange={(e) => setChatMessage(e.target.value)}
+            onKeyDown={handleKeyDown}
             disabled={chatLoading}
-            style={{ flex: 1 }}
+            style={{ 
+              flex: 1, 
+              resize: 'none', 
+              height: '48px', 
+              minHeight: '48px', 
+              paddingTop: '12px', 
+              paddingBottom: '12px',
+              borderRadius: '8px',
+              fontFamily: 'inherit'
+            }}
           />
-          <button className="btn-primary" type="submit" disabled={chatLoading || !chatMessage.trim()}>
+          <button className="btn-primary" type="submit" disabled={chatLoading || !chatMessage.trim()} style={{ height: '48px' }}>
             <Send size={14} />
           </button>
         </form>
