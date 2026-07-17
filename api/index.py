@@ -57,18 +57,40 @@ async def extract_text(file: UploadFile = File(...)):
     else:
         raise HTTPException(status_code=400, detail="Formato de arquivo não suportado. Envie PDF ou DOCX.")
 
+def get_api_key(passed_key: str = None):
+    key = passed_key or os.environ.get("GEMINI_API_KEY", "")
+    if not key:
+        return ""
+    # Try base64 decoding in case Vercel env validators blocked the raw key
+    try:
+        import base64
+        padded_key = key
+        if len(key) % 4 != 0:
+            padded_key += "=" * (4 - len(key) % 4)
+        decoded = base64.b64decode(padded_key).decode("utf-8")
+        if decoded.startswith("AQ.") or decoded.startswith("AIza"):
+            return decoded
+    except Exception:
+        pass
+    return key
+
 @app.post("/api/chat")
 async def chat_with_docs(
     message: str = Form(...),
     history: str = Form("[]"),  # JSON string
     course_plan: str = Form(""),
     mesep_book: str = Form(""),
-    api_key: str = Form(...),
-    model_name: str = Form("gemini-2.0-flash-lite")
+    api_key: str = Form(None),
+    model_name: str = Form(None)
 ):
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(model_name)
+        active_key = get_api_key(api_key)
+        if not active_key:
+            raise HTTPException(status_code=400, detail="API Key do Gemini não configurada no servidor.")
+            
+        active_model = model_name or os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-lite")
+        genai.configure(api_key=active_key)
+        model = genai.GenerativeModel(active_model)
         
         history_list = json.loads(history)
         
@@ -102,12 +124,17 @@ async def chat_with_docs(
 async def analyze_course(
     course_plan: str = Form(...),
     mesep_book: str = Form(""),
-    api_key: str = Form(...),
-    model_name: str = Form("gemini-2.0-flash-lite")
+    api_key: str = Form(None),
+    model_name: str = Form(None)
 ):
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(model_name)
+        active_key = get_api_key(api_key)
+        if not active_key:
+            raise HTTPException(status_code=400, detail="API Key do Gemini não configurada no servidor.")
+            
+        active_model = model_name or os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-lite")
+        genai.configure(api_key=active_key)
+        model = genai.GenerativeModel(active_model)
         
         prompt = (
             "Você é o GusPlan, um assistente de Inteligência Artificial especializado na Metodologia SENAI de Educação Profissional (MESEP).\n"
@@ -203,66 +230,93 @@ async def generate_docx(
                 t_details = doc.tables[t_details_idx]
                 
                 # Populating Details Table
-                t_details.cell(1, 0).text = f"Curso: {curso}"
-                t_details.cell(2, 0).text = f"Unidade curricular (UC): {uc}"
+                if len(t_details.rows) == 12:
+                    t_details.cell(1, 0).text = f"Curso: {curso}"
+                    t_details.cell(2, 0).text = f"Unidade curricular (UC): {uc}"
+                    t_details.cell(3, 0).text = f"Carga horária da UC: {ch_uc}"
+                    t_details.cell(3, 1).text = f"Nº de aulas: {n_aulas}"
+                    t_details.cell(4, 0).text = f"Carga horária prevista para o desenvolvimento da Situação de Aprendizagem: {sa.get('carga_horaria', '')}"
+                    t_details.cell(5, 0).text = f"Objetivo da UC: {objetivo}"
+                    
+                    # Checkbox selection for Strategy Type
+                    has_tech = len(sa.get("capacidades_tecnicas", [])) > 0
+                    has_socio = len(sa.get("capacidades_socioemocionais", [])) > 0
+                    tech_mark = "X" if has_tech else " "
+                    socio_mark = "X" if has_socio else " "
+                    t_details.cell(6, 0).text = f"Capacidades a serem desenvolvidas:  Básicas (   )     Técnicas ( {tech_mark} )    Socioemocionais ( {socio_mark} )"
+                    
+                    # Row 7: list capacities
+                    cap_text = "Capacidades Técnicas:\n"
+                    for cap in sa.get("capacidades_tecnicas", []):
+                        cap_text += f"- {cap}\n"
+                    cap_text += "\nCapacidades Socioemocionais:\n"
+                    for cap in sa.get("capacidades_socioemocionais", []):
+                        cap_text += f"- {cap}\n"
+                    t_details.cell(7, 0).text = cap_text.strip()
+                    
+                    # Row 8: Conhecimentos
+                    know_text = "Conhecimentos:\n"
+                    for kw in sa.get("conhecimentos", []):
+                        know_text += f"- {kw}\n"
+                    t_details.cell(8, 0).text = know_text.strip()
+                    
+                    # Row 9: Challenging Strategy Type Checkbox
+                    strat_type = sa.get("estrategia_tipo", "")
+                    p_sp = "X" if strat_type == "Situação-problema" else " "
+                    p_ec = "X" if strat_type == "Estudo de caso" else " "
+                    p_pa = "X" if strat_type == "Pesquisa Aplicada" else " "
+                    p_pr = "X" if strat_type == "Projeto" else " "
+                    p_in = "X" if strat_type == "Integrador" else " "
+                    t_details.cell(9, 0).text = (
+                        f"Estratégia de aprendizagem desafiadora\n"
+                        f"Situação-problema ( {p_sp} )   Estudo de caso ( {p_ec} )  Pesquisa Aplicada ( {p_pa} )  "
+                        f"Projeto ( {p_pr} ) Integrador ( {p_in} )"
+                    )
+                    
+                    # Row 10: Context, Teacher Notes, Desafio, Resultados
+                    obs_docente = sa.get("observacoes_docente", "")
+                    context_val = sa.get("contextualizacao", "")
+                    desafio_val = sa.get("desafio", "")
+                    res_esperados = "\n".join([f"- {r}" for r in sa.get("resultados_esperados", [])])
+                    t_details.cell(10, 0).text = (
+                        f"Contextualização:\n{context_val}\n\n"
+                        f"Observações para o docente:\n{obs_docente}\n\n"
+                        f"Desafio:\n{desafio_val}\n\n"
+                        f"Resultados esperados:\n{res_esperados}"
+                    )
+                    
+                    # Row 11: Anexos
+                    t_details.cell(11, 0).text = f"Anexos (Figuras, esquemas, desenhos, leiaute, formulários, etc):\n{sa.get('anexos', '')}"
                 
-                t_details.cell(3, 0).text = f"Carga horária da UC: {ch_uc}"
-                t_details.cell(3, 1).text = f"Nº de aulas: {n_aulas}"
-                
-                t_details.cell(4, 0).text = f"Carga horária prevista para o desenvolvimento da Situação de Aprendizagem: {sa.get('carga_horaria', '')}"
-                t_details.cell(5, 0).text = f"Objetivo da UC: {objetivo}"
-                
-                # Checkbox selection for Strategy Type
-                # Row 6: "Capacidades a serem desenvolvidas: Básicas ( ) Técnicas ( ) Socioemocionais ( )"
-                has_tech = len(sa.get("capacidades_tecnicas", [])) > 0
-                has_socio = len(sa.get("capacidades_socioemocionais", [])) > 0
-                tech_mark = "X" if has_tech else " "
-                socio_mark = "X" if has_socio else " "
-                t_details.cell(6, 0).text = f"Capacidades a serem desenvolvidas:  Básicas (   )     Técnicas ( {tech_mark} )    Socioemocionais ( {socio_mark} )"
-                
-                # Row 7: list capacities
-                cap_text = "Capacidades Técnicas:\n"
-                for cap in sa.get("capacidades_tecnicas", []):
-                    cap_text += f"- {cap}\n"
-                cap_text += "\nCapacidades Socioemocionais:\n"
-                for cap in sa.get("capacidades_socioemocionais", []):
-                    cap_text += f"- {cap}\n"
-                t_details.cell(7, 0).text = cap_text.strip()
-                
-                # Row 8: Conhecimentos
-                know_text = "Conhecimentos:\n"
-                for kw in sa.get("conhecimentos", []):
-                    know_text += f"- {kw}\n"
-                t_details.cell(8, 0).text = know_text.strip()
-                
-                # Row 9: Challenging Strategy Type Checkbox
-                strat_type = sa.get("estrategia_tipo", "")
-                p_sp = "X" if strat_type == "Situação-problema" else " "
-                p_ec = "X" if strat_type == "Estudo de caso" else " "
-                p_pa = "X" if strat_type == "Pesquisa Aplicada" else " "
-                p_pr = "X" if strat_type == "Projeto" else " "
-                p_in = "X" if strat_type == "Integrador" else " "
-                t_details.cell(9, 0).text = (
-                    f"Estratégia de aprendizagem desafiadora\n"
-                    f"Situação-problema ( {p_sp} )   Estudo de caso ( {p_ec} )  Pesquisa Aplicada ( {p_pa} )  "
-                    f"Projeto ( {p_pr} ) Integrador ( {p_in} )"
-                )
-                
-                # Row 10: Context, Teacher Notes, Desafio, Resultados
-                obs_docente = sa.get("observacoes_docente", "")
-                context_val = sa.get("contextualizacao", "")
-                desafio_val = sa.get("desafio", "")
-                res_esperados = "\n".join([f"- {r}" for r in sa.get("resultados_esperados", [])])
-                
-                t_details.cell(10, 0).text = (
-                    f"Contextualização:\n{context_val}\n\n"
-                    f"Observações para o docente:\n{obs_docente}\n\n"
-                    f"Desafio:\n{desafio_val}\n\n"
-                    f"Resultados esperados:\n{res_esperados}"
-                )
-                
-                # Row 11: Anexos
-                t_details.cell(11, 0).text = f"Anexos (Figuras, esquemas, desenhos, leiaute, formulários, etc):\n{sa.get('anexos', '')}"
+                elif len(t_details.rows) == 3:
+                    # Subsequent SA details table
+                    # Row 0: Strategy Selection Checkbox
+                    strat_type = sa.get("estrategia_tipo", "")
+                    p_sp = "X" if strat_type == "Situação-problema" else " "
+                    p_ec = "X" if strat_type == "Estudo de caso" else " "
+                    p_pa = "X" if strat_type == "Pesquisa Aplicada" else " "
+                    p_pr = "X" if strat_type == "Projeto" else " "
+                    p_in = "X" if strat_type == "Integrador" else " "
+                    t_details.cell(0, 0).text = (
+                        f"Estratégia de aprendizagem desafiadora\n"
+                        f"Situação-problema ( {p_sp} )   Estudo de caso ( {p_ec} )  Pesquisa Aplicada ( {p_pa} )  "
+                        f"Projeto ( {p_pr} ) Integrador ( {p_in} )"
+                    )
+                    
+                    # Row 1: Context, Teacher Notes, Desafio, Resultados
+                    obs_docente = sa.get("observacoes_docente", "")
+                    context_val = sa.get("contextualizacao", "")
+                    desafio_val = sa.get("desafio", "")
+                    res_esperados = "\n".join([f"- {r}" for r in sa.get("resultados_esperados", [])])
+                    t_details.cell(1, 0).text = (
+                        f"Contextualização:\n{context_val}\n\n"
+                        f"Observações para o docente:\n{obs_docente}\n\n"
+                        f"Desafio:\n{desafio_val}\n\n"
+                        f"Resultados esperados:\n{res_esperados}"
+                    )
+                    
+                    # Row 2: Anexos
+                    t_details.cell(2, 0).text = f"Anexos (Figuras, esquemas, desenhos, leiaute, formulários, etc):\n{sa.get('anexos', '')}"
                 
             # Populate References Table
             if t_ref_idx < len(doc.tables):

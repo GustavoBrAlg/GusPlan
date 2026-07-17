@@ -1,0 +1,13 @@
+# Exclude heavy documents from Vercel upload (as they are uploaded in-browser by users)
+*.pdf
+*.docx
+*.txt
+
+# Build folders
+node_modules/
+dist/
+.git/
+.vscode/
+.idea/
+.vercel/
+.gemini/
